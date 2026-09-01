@@ -1,0 +1,194 @@
+name: Ripki RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rdp:
+    runs-on: windows-latest
+    timeout-minutes: 3600
+
+    steps:
+
+      # ==============================
+      # 1. Configure Windows RDP
+      # ==============================
+      - name: Configure RDP
+        shell: powershell
+        run: |
+          Set-ItemProperty `
+            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Name 'fDenyTSConnections' `
+            -Value 0 `
+            -Force
+
+          Set-ItemProperty `
+            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name 'UserAuthentication' `
+            -Value 0 `
+            -Force
+
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+          Restart-Service TermService -Force
+
+      # ==============================
+      # 2. Create RDP User
+      # ==============================
+      - name: Create RDP User
+        shell: powershell
+        run: |
+          $username = "Ripki"
+
+          $chars = (
+            [char[]]"ABCDEFGHIJKLMNOPQRSTUVWXYZ" +
+            [char[]]"abcdefghijklmnopqrstuvwxyz" +
+            [char[]]"0123456789" +
+            [char[]]"!@#$%^&*"
+          )
+
+          $password = -join (
+            1..20 | ForEach-Object {
+              $chars | Get-Random
+            }
+          )
+
+          $securePassword = ConvertTo-SecureString `
+            $password `
+            -AsPlainText `
+            -Force
+
+          New-LocalUser `
+            -Name $username `
+            -Password $securePassword `
+            -AccountNeverExpires
+
+          Add-LocalGroupMember `
+            -Group "Administrators" `
+            -Member $username
+
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -Member $username
+
+          "RDP_USERNAME=$username" >> $env:GITHUB_ENV
+          "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+
+      # ==============================
+      # 3. Install Tailscale
+      # ==============================
+      - name: Install Tailscale
+        shell: powershell
+        run: |
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installer = "$env:TEMP\tailscale.msi"
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $installer
+
+          Start-Process `
+            msiexec.exe `
+            -ArgumentList "/i", "`"$installer`"", "/quiet", "/norestart" `
+            -Wait
+
+          Remove-Item $installer -Force
+
+      # ==============================
+      # 4. Connect Tailscale
+      # ==============================
+      - name: Connect Tailscale
+        shell: powershell
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          & $tailscale up `
+            --authkey=$env:TAILSCALE_AUTH_KEY `
+            --hostname="gh-rdp-$env:GITHUB_RUN_ID"
+
+          Start-Sleep -Seconds 5
+
+          $ip = & $tailscale ip -4
+
+          if (-not $ip) {
+            Write-Error "Tailscale IP was not assigned."
+            exit 1
+          }
+
+          "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
+
+      # ==============================
+      # 5. Check Hardware
+      # ==============================
+      - name: Show Hardware
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "=============================="
+          Write-Host "       RDP HARDWARE INFO"
+          Write-Host "=============================="
+
+          Write-Host ""
+          Write-Host "CPU:"
+          Get-CimInstance Win32_Processor |
+            Select-Object Name, NumberOfCores, NumberOfLogicalProcessors
+
+          Write-Host ""
+          Write-Host "RAM:"
+          Get-CimInstance Win32_ComputerSystem |
+            Select-Object TotalPhysicalMemory
+
+          Write-Host ""
+          Write-Host "GPU:"
+          Get-CimInstance Win32_VideoController |
+            Select-Object Name, AdapterRAM, DriverVersion
+
+          Write-Host ""
+          Write-Host "=============================="
+
+      # ==============================
+      # 6. Test RDP
+      # ==============================
+      - name: Test RDP
+        shell: powershell
+        run: |
+          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+
+          $test = Test-NetConnection `
+            -ComputerName $env:TAILSCALE_IP `
+            -Port 3389
+
+          if (-not $test.TcpTestSucceeded) {
+            Write-Error "RDP port 3389 is not reachable."
+            exit 1
+          }
+
+          Write-Host "RDP connection successful!"
+
+      # ==============================
+      # 7. Show RDP Credentials
+      # ==============================
+      - name: Show RDP Information
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "================================"
+          Write-Host "          RDP ACCESS"
+          Write-Host "================================"
+          Write-Host "Address  : $env:TAILSCALE_IP"
+          Write-Host "Username : $env:RDP_USERNAME"
+          Write-Host "Password : $env:RDP_PASSWORD"
+          Write-Host "================================"
+
+      # ==============================
+      # 8. Keep RDP Alive
+      # ==============================
+      - name: Keep RDP Alive
+        shell: powershell
+        run: |
+          while ($true) {
+            Write-Host "[$(Get-Date)] RDP is running..."
+            Start-Sleep -Seconds 300
+          }
