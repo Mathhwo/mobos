@@ -1,0 +1,120 @@
+name: Yoohan AMD Windows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify-amd-rdp:
+    runs-on: [self-hosted, Windows, AMD]
+
+    steps:
+
+      - name: Verify AMD CPU
+        shell: powershell
+        run: |
+          $cpu = Get-CimInstance Win32_Processor |
+            Select-Object -First 1
+
+          Write-Host "CPU          : $($cpu.Name)"
+          Write-Host "Manufacturer : $($cpu.Manufacturer)"
+          Write-Host "Architecture : $($cpu.Architecture)"
+
+          if ($cpu.Manufacturer -notmatch "AMD") {
+              Write-Error "Runner ini bukan CPU AMD."
+              exit 1
+          }
+
+          Write-Host "AMD CPU terdeteksi."
+
+      - name: Verify Windows
+        shell: powershell
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+
+          Write-Host "Windows      : $($os.Caption)"
+          Write-Host "Version      : $($os.Version)"
+          Write-Host "Architecture : $($os.OSArchitecture)"
+
+      - name: Verify Yoohan User
+        shell: powershell
+        run: |
+          $user = Get-LocalUser `
+            -Name "Yoohan" `
+            -ErrorAction SilentlyContinue
+
+          if (-not $user) {
+              Write-Error "User Yoohan tidak ditemukan."
+              exit 1
+          }
+
+          Write-Host "Username : $($user.Name)"
+          Write-Host "Enabled  : $($user.Enabled)"
+
+      - name: Verify Tailscale
+        shell: powershell
+        run: |
+          $tailscale = Get-Command tailscale `
+            -ErrorAction SilentlyContinue
+
+          if (-not $tailscale) {
+              Write-Error "Tailscale belum terpasang."
+              exit 1
+          }
+
+          Write-Host "Tailscale ditemukan."
+          tailscale version
+
+      - name: Verify RDP Service
+        shell: powershell
+        run: |
+          $service = Get-Service `
+            -Name "TermService" `
+            -ErrorAction SilentlyContinue
+
+          if (-not $service) {
+              Write-Error "Remote Desktop Service tidak ditemukan."
+              exit 1
+          }
+
+          Write-Host "RDP Service: $($service.Status)"
+
+          if ($service.Status -ne "Running") {
+              Write-Error "RDP Service tidak sedang berjalan."
+              exit 1
+          }
+
+      - name: Verify RDP Port
+        shell: powershell
+        run: |
+          $port = Get-NetTCPConnection `
+            -LocalPort 3389 `
+            -State Listen `
+            -ErrorAction SilentlyContinue
+
+          if (-not $port) {
+              Write-Error "Port RDP 3389 tidak sedang listening."
+              exit 1
+          }
+
+          Write-Host "RDP port 3389 aktif."
+
+      - name: Show Tailscale Status
+        shell: powershell
+        run: |
+          Write-Host "=== TAILSCALE STATUS ==="
+          tailscale status
+
+      - name: Final Status
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "======================================"
+          Write-Host "        YOohan AMD RDP CHECK"
+          Write-Host "======================================"
+          Write-Host "AMD CPU       : OK"
+          Write-Host "Windows       : OK"
+          Write-Host "User          : Yoohan"
+          Write-Host "Tailscale     : OK"
+          Write-Host "RDP Service   : OK"
+          Write-Host "RDP Port      : 3389"
+          Write-Host "======================================"
